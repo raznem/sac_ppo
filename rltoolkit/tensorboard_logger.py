@@ -231,6 +231,13 @@ class TensorboardWriter(SummaryWriter):
         self.add_scalar("Running_return/per_frames", running_return, frames)
         self.add_scalar("Running_return/per_rollouts", running_return, rollouts)
 
+    def log_test_return(
+        self, iterations: int, frames: int, rollouts: int, test_return: float
+    ):
+        self.add_scalar("Test_return/per_iterations", test_return, iterations)
+        self.add_scalar("Test_return/per_frames", test_return, frames)
+        self.add_scalar("Test_return/per_rollouts", test_return, rollouts)
+
     def log_loss(self, i: int, loss: Dict[str, int]):
         for key, value in loss.items():
             label = "Loss/" + key.capitalize()

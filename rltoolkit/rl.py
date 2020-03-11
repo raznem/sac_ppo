@@ -63,8 +63,8 @@ class RL:
         assert iterations > 0, f"Iteration has to be positive not {iterations}"
         if max_frames is not None:
             assert (
-                max_frames < iterations * batch_size
-            ), "max_frames should be smaller than iterations * batch_size"
+                max_frames <= iterations * batch_size
+            ), "max_frames should be smaller or equal than iterations * batch_size"
 
         self.max_frames = max_frames
         self.env_name = env_name
@@ -219,6 +219,14 @@ class RL:
             self.stats_logger.rollouts,
             self.stats_logger.running_return,
         )
+        if self.test_episodes:
+            self.tensorboard_writer.log_test_return(
+                self.iteration,
+                self.stats_logger.frames,
+                self.stats_logger.rollouts,
+                self.stats_logger.test_return,
+            )
+
         if (self.log_iteration % 5) == 0 or done:
             _, rendering_time = self.tensorboard_writer.record_episode(
                 self, self.iteration, done
