@@ -1,0 +1,9 @@
+tensorboard/
+*.pt
+*.pkl
+.ipynb_checkpoints/
+.vscode/
+__pycache__/
+*.egg-info/
+*tfevents.**
+*.log
