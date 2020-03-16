@@ -108,6 +108,8 @@ class DDPG(RL):
 
         self.loss = {"actor": 0.0, "critic": 0.0}
         new_hparams = {
+            "hparams/actor_lr": self.actor_lr,
+            "hparams/critic_lr": self.critic_lr
             "hparams/tau": self.tau,
             "hparams/update_batch_size": self.update_batch_size,
             "hparams/buffer_size": self.buffer_size,

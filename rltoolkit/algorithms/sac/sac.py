@@ -130,6 +130,10 @@ class SAC(DDPG):
         self._critic_2, self.critic_2_optimizer = self.set_model(model, self.critic_lr)
         self.critic_2_targ = copy.deepcopy(self._critic_2)
 
+    def noise_action(self, obs, act_noise):
+        action, _ = self._actor.act(obs)
+        return action
+
     def compute_qfunc_targ(
         self, reward: torch.Tensor, next_obs: torch.Tensor, done: torch.Tensor
     ):
@@ -242,16 +246,16 @@ class SAC(DDPG):
 
         sampled_action, sampled_logprob = self._actor(obs)
 
-        if self.stats_logger.frames % (self.update_freq * self.pi_update_freq) == 0:
-            loss = self.compute_pi_loss(obs, sampled_action, sampled_logprob)
-            self.loss["actor"] = loss.item()
+        # if self.stats_logger.frames % (self.update_freq * self.pi_update_freq) == 0:
+        loss = self.compute_pi_loss(obs, sampled_action, sampled_logprob)
+        self.loss["actor"] = loss.item()
 
-            self.actor_optimizer.zero_grad()
-            loss.backward()
-            self.actor_optimizer.step()
+        self.actor_optimizer.zero_grad()
+        loss.backward()
+        self.actor_optimizer.step()
 
-            # Update target networks
-            self.update_target_q()
+        # Update target networks
+        self.update_target_q()
 
         self._critic_1.train()
         self._critic_2.train()
