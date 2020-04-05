@@ -120,8 +120,11 @@ class PPO(A2C):
         Returns:
             torch.tensor: tensor containing GAE advantages for observations from buffer
         """
+        # TODO: fix GAE to consider end and done
         obs = torch.stack(buffer.obs)
-        done = torch.tensor(buffer.done, dtype=torch.float32, device=self.device)
+        next_obs = torch.stack(buffer.next_obs)
+        ends = torch.tensor(buffer.end, dtype=torch.float32, device=self.device)
+        dones = torch.tensor(buffer.done, dtype=torch.float32, device=self.device)
 
         state_value = self.critic(obs)
 
@@ -132,8 +135,10 @@ class PPO(A2C):
 
         for i, delta in enumerate(reversed(deltas)):
             idx = -i - 1
-            if done[idx]:
+            if dones[idx]:
                 gae = 0
+            elif ends[idx]:
+                gae = self.critic(next_obs[idx]).squeeze().item()
             gae = gae * discount + delta
             advantage[idx] = gae
         return advantage
