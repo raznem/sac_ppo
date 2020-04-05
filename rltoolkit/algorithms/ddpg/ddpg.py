@@ -102,14 +102,14 @@ class DDPG(RL):
             self.buffer_size,
             self.ob_dim,
             self.ac_dim,
-            dtype=torch.float32,
             discrete=self.discrete,
+            dtype=torch.float32,
         )
 
         self.loss = {"actor": 0.0, "critic": 0.0}
         new_hparams = {
             "hparams/actor_lr": self.actor_lr,
-            "hparams/critic_lr": self.critic_lr
+            "hparams/critic_lr": self.critic_lr,
             "hparams/tau": self.tau,
             "hparams/update_batch_size": self.update_batch_size,
             "hparams/buffer_size": self.buffer_size,
@@ -155,7 +155,7 @@ class DDPG(RL):
             Memory: Buffer filled with one batch
             float: Time taken for evaluation
         """
-        self.collect_batch_and_train()
+        self.collect_batch_and_train(self.batch_size)
         return self.replay_buffer.last_rollout()
 
     def noise_action(self, obs, act_noise):
@@ -163,40 +163,63 @@ class DDPG(RL):
         action += act_noise * torch.randn(self.ac_dim)
         return np.clip(action, -self.ac_lim, self.ac_lim)
 
-    def collect_batch_and_train(self):
+    def initial_act(self, obs) -> torch.Tensor:
+        action = torch.tensor(self.env.action_space.sample()).unsqueeze(0)
+        return action
+
+    def collect_batch_and_train(self, batch_size: int, *args, **kwargs):
         f"""Perform full rollouts and collect samples till batch_size number of steps
             will be added to the replay buffer
 
+        Args:
+            batch_size (int): number of samples to collect and train
+            *args, **kwargs: arguments for make_update
         """
         collected = 0
-        while collected < self.batch_size:
+        while collected < batch_size:
             self.stats_logger.rollouts += 1
 
             obs = self.env.reset()
-            done = False
+            # end - end of the episode from perspective of the simulation
+            # done - end of the episode from perspective of the model
+            end = False
             obs = self.process_obs(obs)
             prev_idx = self.replay_buffer.add_obs(obs)
+            ep_len = 0
 
-            while not done:
+            while not end:
                 if self.stats_logger.frames < self.random_frames:
-                    action = torch.tensor(self.env.action_space.sample()).unsqueeze(0)
+                    action = self.initial_act(obs)
                 else:
                     action = self.noise_action(obs, self.act_noise)
                 action_proc = self.process_action(action, obs)
                 obs, rew, done, _ = self.env.step(action_proc)
+                ep_len += 1
+                end = done
+                done = False if ep_len == self.max_ep_len else done
+
                 obs = self.process_obs(obs)
                 next_idx = self.replay_buffer.add_obs(obs)
-                self.replay_buffer.add_timestep(prev_idx, next_idx, action, rew, done)
+                self.replay_buffer.add_timestep(
+                    prev_idx, next_idx, action, rew, done, end
+                )
                 prev_idx = next_idx
                 self.stats_logger.frames += 1
                 collected += 1
 
-                if (
-                    len(self.replay_buffer) > self.update_batch_size
-                    and self.stats_logger.frames % self.update_freq == 0
-                ):
-                    for _ in range(self.grad_steps):
-                        self.update()
+                self.make_update(*args, **kwargs)
+
+    def update_condition(self):
+        return (
+            len(self.replay_buffer) > self.update_batch_size
+            and self.stats_logger.frames % self.update_freq == 0
+        )
+
+    def make_update(self):
+        if self.update_condition():
+            for _ in range(self.grad_steps):
+                batch = self.replay_buffer.sample_batch(self.update_batch_size)
+                self.update(*batch)
 
     def compute_qfunc_targ(
         self, reward: torch.Tensor, next_obs: torch.Tensor, done: torch.Tensor
@@ -245,13 +268,23 @@ class DDPG(RL):
                 targ_params.data.mul_(1 - self.tau)
                 targ_params.data.add_((self.tau) * params.data)
 
-    def update(self):
-        """DDPG update:
-        """
-        obs, next_obs, action, reward, done = self.replay_buffer.sample_batch(
-            self.update_batch_size
-        )
+    def update(
+        self,
+        obs: torch.Tensor,
+        next_obs: torch.Tensor,
+        action: torch.Tensor,
+        reward: torch.Tensor,
+        done: torch.Tensor,
+    ):
+        """DDPG update step
 
+        Args:
+            obs (torch.Tensor): observations tensor
+            next_obs (torch.Tensor): next observations tensor
+            action (torch.Tensor): actions tensor
+            reward (torch.Tensor): rewards tensor
+            done (torch.Tensor): dones tensor
+        """
         y = self.compute_qfunc_targ(reward, next_obs, done)
 
         # Update Q-function by one step
