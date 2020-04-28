@@ -19,6 +19,7 @@ class SAC(DDPG):
         alpha: float = config.ALPHA,
         tau: float = config.TAU,
         pi_update_freq: int = config.PI_UPDATE_FREQ,
+        act_noise: float = 0,
         *args,
         **kwargs,
     ):
@@ -30,6 +31,8 @@ class SAC(DDPG):
             alpha (float, optional): Initial alpha value. Defaults to { config.ALPHA }.
             pi_update_freq (int, optional): Frequency of policy updates
                 (in SAC updates). Defaults to { config.PI_UPDATE_FREQ }.
+            act_noise (float, optional): Actions noise multiplier.
+                Defaults to { 0 }.
             actor_lr (float, optional): Learning rate of the actor.
                 Defaults to { config.DDPG_LR }.
             critic_lr (float, optional): Learning rate of the critic.
@@ -130,10 +133,6 @@ class SAC(DDPG):
         self._critic_2, self.critic_2_optimizer = self.set_model(model, self.critic_lr)
         self.critic_2_targ = copy.deepcopy(self._critic_2)
 
-    def noise_action(self, obs, act_noise):
-        action, _ = self._actor.act(obs)
-        return action
-
     def compute_qfunc_targ(
         self, reward: torch.Tensor, next_obs: torch.Tensor, done: torch.Tensor
     ):
@@ -214,13 +213,23 @@ class SAC(DDPG):
         alpha_loss = self.log_alpha.exp() * (-sampled_logprob - self.target_entropy)
         return alpha_loss.mean()
 
-    def update(self):
+    def update(
+        self,
+        obs: torch.Tensor,
+        next_obs: torch.Tensor,
+        action: torch.Tensor,
+        reward: torch.Tensor,
+        done: torch.Tensor,
+    ):
         """Soft Actor-Critic update:
-        """
-        obs, next_obs, action, reward, done = self.replay_buffer.sample_batch(
-            self.update_batch_size
-        )
 
+        Args:
+            obs (torch.Tensor): observations tensor
+            next_obs (torch.Tensor): next observations tensor
+            action (torch.Tensor): actions tensor
+            reward (torch.Tensor): rewards tensor
+            done (torch.Tensor): dones tensor
+        """
         y = self.compute_qfunc_targ(reward, next_obs, done)
 
         # Update Q-functions by one step

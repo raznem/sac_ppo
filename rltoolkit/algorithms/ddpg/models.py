@@ -10,15 +10,14 @@ class Actor(nn.Module):
         self.ac_lim = ac_lim
         self.obs_dim = obs_dim
 
-        self.fc1 = nn.Linear(obs_dim, 64)
-        # self.ln1 = nn.LayerNorm(64)
-        self.fc2 = nn.Linear(64, ac_dim)
+        self.fc1 = nn.Linear(obs_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, ac_dim)
 
     def forward(self, x):
-        x = torch.tanh(self.fc1(x))
-        # x = self.ln1()
-        x = torch.tanh(self.fc2(x))
-        action = torch.tanh(x)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        action = torch.tanh(self.fc3(x))
         action = action * self.ac_lim
         return action, None
 
@@ -33,13 +32,13 @@ class Critic(nn.Module):
     def __init__(self, obs_dim: int, ac_dim: int):
         super().__init__()
         self.ac_dim = ac_dim
-        self.fc1 = nn.Linear(obs_dim + ac_dim, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)
+        self.fc1 = nn.Linear(obs_dim + ac_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
 
     def forward(self, obs, ac):
         x = torch.cat((obs, ac), dim=-1)
-        x = torch.tanh(self.fc1(x))
-        x = torch.tanh(self.fc2(x))
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
         x = self.fc3(x)
         return torch.squeeze(x, -1)

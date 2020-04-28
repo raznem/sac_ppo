@@ -62,6 +62,8 @@ class A2C(RL):
         """
         super().__init__(*args, **kwargs)
 
+        self.buffer = None
+
         self._actor = None
         self._critic = None
         self.actor_lr = actor_lr
@@ -112,11 +114,11 @@ class A2C(RL):
             Memory: Buffer filled with one batch
             float: Time taken for evaluation
         """
-        buffer = Memory()
-        self.collect_batch(buffer)
-        advantages = self.update_critic(buffer)
-        self.update_actor(advantages, buffer)
-        return buffer
+        self.buffer = Memory()
+        self.collect_batch(self.buffer)
+        advantages = self.update_critic(self.buffer)
+        self.update_actor(advantages, self.buffer)
+        return self.buffer
 
     def collect_batch(self, buffer: Memory):
         f"""Perform full rollouts and collect samples till it will be filled with
@@ -133,18 +135,24 @@ class A2C(RL):
             self.stats_logger.rollouts += 1
 
             obs = self.env.reset()
-            done = False
+            end = False
             obs = self.process_obs(obs)
             prev_idx = buffer.add_obs(obs)
+            ep_len = 0
 
-            while not done:
+            while not end:
                 action, action_logprobs = self.actor.act(obs)
                 action_proc = self.process_action(action, obs)
                 obs, rew, done, _ = self.env.step(action_proc)
+                ep_len += 1
+                end = done
+                done = False if ep_len == self.max_ep_len else done
+
                 obs = self.process_obs(obs)
                 next_idx = buffer.add_obs(obs)
+
                 buffer.add_timestep(
-                    prev_idx, next_idx, action, action_logprobs, rew, done
+                    prev_idx, next_idx, action, action_logprobs, rew, done, end
                 )
                 prev_idx = next_idx
             buffer.end_rollout()
