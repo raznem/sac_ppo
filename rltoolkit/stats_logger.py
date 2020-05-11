@@ -1,9 +1,9 @@
+import logging
 import pickle as pkl
 
 from rltoolkit.buffer import Memory
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class StatsLogger:

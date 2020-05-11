@@ -11,7 +11,8 @@ USE_GPU = False
 TENSORBOARD_DIR = None
 TENSORBOARD_COMMENT = ""
 VERBOSE = 1
-RENDER = True
+RENDER = False
+DEBUG_MODE = True
 
 # A2C config
 A_LR = 3e-3
@@ -20,29 +21,45 @@ NUM_TARGET_UPDATES = 10
 NUM_CRITIC_UPDATES = 10
 NORMALIZE_ADV = True
 
+# AcM config
+ACM_EPOCHS = 1
+ACM_BATCH_SIZE = 128
+ACM_UPDATE_FREQ = 1
+ACM_OB_IDX = None  # For reacher: [0, 1, 2, 3, 6, 7]
+BUFFER_BATCHES = 10
+ACM_LR = 3e-3
+PRE_TRAIN_N_EPOCHS = 10
+ACM_SCHEDULER_STEP = 25
+ACM_SCHEDULER_GAMMA = 0.5
+ACM_VAL_BUFFER_SIZE = 10_000
+
 # PPO config
 PPO_EPSILON = 0.2
 GAE_LAMBDA = 0.95
-PPO_MAX_KL_DIV = 0.005
-PPO_MAX_EPOCHS = 100
-PPO_BATCH_SIZE = 64
-PPO_ENTROPY = 0.01
+PPO_MAX_KL_DIV = 0.15
+PPO_MAX_EPOCHS = 50
+PPO_BATCH_SIZE = 1000
+PPO_ENTROPY = 0.00
 
 # DDPG
-DDPG_LR = 3e-3
+DDPG_LR = 1e-3
 TAU = 0.005
 UPDATE_BATCH_SIZE = 100
 BUFFER_SIZE = int(1e6)
 RANDOM_FRAMES = 100
-UPDATE_FREQ = 1
-GRAD_STEPS = 1
-ACT_NOISE = 0.22
+UPDATE_FREQ = 50
+GRAD_STEPS = 50
+ACT_NOISE = 0.1
 
 # SAC config
-ALPHA_LR = 3e-2
-ALPHA = 0.01
-PI_UPDATE_FREQ = 2
+ALPHA_LR = 1e-3
+ALPHA = 0.2
+PI_UPDATE_FREQ = 1
 
+# Norm config
+MAX_ABS_OBS_VALUE = 10
+NORM_ALPHA = 0.99
+OBS_NORM = False
 
 SHORTNAMES = {
     "hparams/type": "",
@@ -53,7 +70,13 @@ SHORTNAMES = {
     "hparams/critic_num_target_updates": "c_target_u",
     "hparams/num_critic_updates_per_target": "c_updates_pt",
     "hparams/normalize_adv": "norm",
-    "hparams/pre_train_n_batches": "pb",
+    "hparams/acm_epochs": "acm_e",
+    "hparams/acm_batch_size": "acm_bs",
+    "hparams/acm_update_freq": "acm_ufreq",
+    "hparams/acm_lr": "acm_lr",
+    "hparams/buffer_batches": "bb",
+    "hparams/acm_pre_train_epochs": "pe",
+    "hparams/acm_pre_train_samples": "ps",
     "hparams/ppo_epsilon": "ppo_eps",
     "hparams/gae_lambda": "gae_l",
     "hparams/kl_div_threshold": "kl_thr",
@@ -69,4 +92,8 @@ SHORTNAMES = {
     "hparams/pi_update_freq": "pi_ufreq",
     "hparams/grad_steps": "gs",
     "hparams/act_noise": "noise",
+    "hparams/acm_update_batches": "acm_bs",
+    "hparams/unbiased_update": "acm_unb",
+    "hparams/custom_loss": "acm_cl",
+    "hparams/normalize_actor_ac": "acm_norm_rl",
 }

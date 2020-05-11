@@ -1,19 +1,110 @@
+import logging
 from pathlib import Path
-from typing import Union
+from typing import Any, Optional, Tuple, Union
 
 import gym
 import torch
+import pickle as pkl
 
 from rltoolkit import config, utils
 from rltoolkit.buffer import Memory
-from rltoolkit.logger import get_logger
 from rltoolkit.stats_logger import StatsLogger
 from rltoolkit.tensorboard_logger import TensorboardWriter
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
-class RL:
+class MetaLearner:
+    def __init__(
+        self,
+        env_name: str,
+        use_gpu: bool,
+        debug_mode: bool = config.DEBUG_MODE,
+        tensorboard_dir: Union[str, None] = config.TENSORBOARD_DIR,
+        tensorboard_comment: str = config.TENSORBOARD_COMMENT,
+    ):
+        f"""Class with parameters common for RL and other interactions with environment
+
+        Args:
+            env_name (str): Name of the gym environment.
+            use_gpu (bool): Use CUDA.
+            debug_mode (bool, optional): Log additional info.
+                Defaults to { config.DEBUG_MODE }
+            tensorboard_dir (Union[str, None], optional): Path to tensorboard logs.
+                Defaults to { config.TENSORBOARD_DIR }.
+            tensorboard_comment (str, optional): Comment for tensorboard files.
+                Defaults to { config.TENSORBOARD_COMMENT }.
+        """
+        self.env_name = env_name
+        if use_gpu and torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
+
+        self.env = gym.make(self.env_name)
+        self.discrete = isinstance(self.env.action_space, gym.spaces.Discrete)
+        self.ob_dim = self.env.observation_space.shape[0]
+        if self.discrete:
+            self.ac_dim = self.env.action_space.n
+            self.ac_lim = None
+        else:
+            self.ac_dim = self.env.action_space.shape[0]
+            self.ac_lim = torch.tensor(self.env.action_space.high, device=self.device)
+
+        self.obs_mean = torch.zeros(self.ob_dim, device=self.device)
+        self.obs_std = torch.ones(self.ob_dim, device=self.device)
+
+        self.iteration = 0  # used in tensorboard
+
+        self.opt = torch.optim.Adam
+        self.loss = {}
+
+        self.debug_mode = debug_mode
+
+        self.tensorboard_writer = None
+        self.tensorboard_comment = (
+            "_" + tensorboard_comment if tensorboard_comment else ""
+        )
+        self.tensorboard_dir = tensorboard_dir
+
+    def run_tensorboard_if_needed(self):
+        if self.tensorboard_writer is None and (self.tensorboard_dir is not None):
+            self.tensorboard_writer = TensorboardWriter(
+                env_name=self.env_name,
+                log_dir=self.tensorboard_dir,
+                filename=self.filename,
+                render=self.render,
+            )
+
+    def log_obs_mean_std_tensorboard(self):
+        """
+        Log mean and std of observations in the tensorboard.
+        """
+        self.run_tensorboard_if_needed()
+        self.tensorboard_writer.log_obs_mean_std(
+            self.iteration, self.obs_mean, self.obs_std
+        )
+
+    def update_obs_mean_std(self, buffer: Memory) -> Memory:
+        """
+        Update running average of mean and stds based on the buffer.
+
+        Args:
+            buffer (Memory)
+
+        Returns:
+            Memory
+        """
+        buffer.update_obs_mean_std()
+        self.obs_mean = buffer.obs_mean
+        self.obs_std = buffer.obs_std
+
+        if self.debug_mode and self.tensorboard_dir is not None:
+            self.log_obs_mean_std_tensorboard()
+        return buffer
+
+
+class RL(MetaLearner):
     def __init__(
         self,
         env_name: str = config.ENV_NAME,
@@ -26,10 +117,10 @@ class RL:
         return_done: Union[int, None] = config.RETURN_DONE,
         log_dir: str = config.LOG_DIR,
         use_gpu: bool = config.USE_GPU,
-        tensorboard_dir: Union[str, None] = config.TENSORBOARD_DIR,
-        tensorboard_comment: str = config.TENSORBOARD_COMMENT,
         verbose: int = config.VERBOSE,
         render: bool = config.RENDER,
+        *args,
+        **kwargs,
     ):
         f"""Basic parent class for reinforcement learning algorithms.
 
@@ -51,15 +142,17 @@ class RL:
             log_dir (str, optional): Path for basic logs which includes final model.
                 Defaults to { config.LOG_DIR }.
             use_gpu (bool, optional): Use CUDA. Defaults to { config.USE_GPU }.
+            verbose (int, optional): Verbose level. Defaults to { config.VERBOSE }.
+            render (bool, optional): Render rollouts to tensorboard.
+                Defaults to { config.RENDER }.
+            debug_mode (bool, optional): Log additional info.
+                Defaults to { config.DEBUG_MODE }
             tensorboard_dir (Union[str, None], optional): Path to tensorboard logs.
                 Defaults to { config.TENSORBOARD_DIR }.
             tensorboard_comment (str, optional): Comment for tensorboard files.
                 Defaults to { config.TENSORBOARD_COMMENT }.
-            verbose (int, optional): Verbose level. Defaults to { config.VERBOSE }.
-            render (bool, optional): Render rollouts to tensorboard.
-                Defaults to { config.RENDER }.
         """
-
+        super().__init__(env_name, use_gpu, *args, **kwargs)
         assert iterations > 0, f"Iteration has to be positive not {iterations}"
         if max_frames is not None:
             assert (
@@ -67,7 +160,6 @@ class RL:
             ), "max_frames should be smaller or equal than iterations * batch_size"
 
         self.max_frames = max_frames
-        self.env_name = env_name
         self.gamma = gamma
         self.stats_freq = stats_freq
         self.test_episodes = test_episodes
@@ -79,53 +171,35 @@ class RL:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         else:
             self.log_dir = log_dir
-        self.stats_logger = StatsLogger()
         self.verbose = verbose
         self.render = render
 
-        self.tensorboard_writer = None
-        self.tensorboard_comment = (
-            "_" + tensorboard_comment if tensorboard_comment else ""
-        )
-        self.tensorboard_dir = tensorboard_dir
-
-        if use_gpu and torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
-
-        self.env = gym.make(self.env_name)
-        self.discrete = isinstance(self.env.action_space, gym.spaces.Discrete)
-        self.ob_dim = self.env.observation_space.shape[0]
-        if self.discrete:
-            self.ac_dim = self.env.action_space.n
-            self.ac_lim = None
-        else:
-            self.ac_dim = self.env.action_space.shape[0]
-            self.ac_lim = torch.tensor(self.env.action_space.high)
+        self.max_ep_len = self.env._max_episode_steps
 
         self.start_time = utils.get_time()
 
-        self.iteration = 0  # used for rendering video in tensorboard
-        self.loss = {}
         self.hparams = {
             "hparams/gamma": self.gamma,
             "hparams/batch_size": self.batch_size,
             "hparams/type": utils.get_pretty_type_name(self),
         }
         self.shortnames = config.SHORTNAMES
+        self.stats_logger = StatsLogger()
 
     def train(self, iterations=None):
         f""" Train RL model
 
         Args:
-            iterations ([type], optional): Number of training iterations.
+            iterations ([type], optional): Number of additional training iterations.
+            If None performs number of iterations defined in self.iterations.
+            Otherwise increase global counter by this value to run additional steps.
             Defaults to { None }.
         """
         self.run_tensorboard_if_needed()
-        if iterations is None:
-            iterations = self.iterations
-        while self.iteration < iterations:
+        if iterations:
+            self.iterations += iterations
+
+        while self.iteration < self.iterations:
             buffer, time_diff = self.perform_iteration()
             self.stats_logger.time_list.append(time_diff)
             running_return = self.stats_logger.calc_running_return(buffer)
@@ -150,7 +224,7 @@ class RL:
         self.logs_after_iteration(buffer, done=True)
 
         if self.log_dir is not None:
-            self.save_model()
+            self.save()
 
     def test(self, episodes=None):
         f"""Test policy
@@ -170,6 +244,49 @@ class RL:
 
     def save_model(self):
         raise NotImplementedError
+
+    def check_path(self, path):
+        if self.filename is None and path is None:
+            raise AttributeError
+        elif path is None:
+            path = str(self.log_path) + ".pkl"
+        return path
+
+    def collect_params_dict(self):
+        params_dict = {}
+        params_dict["actor"] = self.actor.state_dict()
+        params_dict["critic"] = self.critic.state_dict()
+        params_dict["obs_mean"] = self.obs_mean
+        params_dict["obs_std"] = self.obs_std
+        return params_dict
+
+    def apply_params_dict(self, params_dict):
+        self.actor.load_state_dict(params_dict["actor"])
+        self.critic.load_state_dict(params_dict["critic"])
+        self.obs_mean = params_dict["obs_mean"]
+        self.obs_std = params_dict["obs_std"]
+
+    def save(self, path: str = None):
+        f"""Save RL object
+
+        Args:
+            path (str): Path to save
+        """
+        path = self.check_path(path)
+        with open(path, "wb") as f:
+            params_dict = self.collect_params_dict()
+            pkl.dump(params_dict, f)
+
+    def load(self, path: str):
+        """Load RL object
+
+        Args:
+            path (str): Path to saved RL object
+        """
+        path = self.check_path(path)
+        with open(path, "rb") as f:
+            params_dict = pkl.load(f)
+            self.apply_params_dict(params_dict)
 
     @property
     def log_iteration(self):
@@ -236,15 +353,6 @@ class RL:
         self.tensorboard_writer.log_observations(self.iteration, buffer)
         self.tensorboard_writer.log_loss(self.iteration, self.loss)
 
-    def run_tensorboard_if_needed(self):
-        if self.tensorboard_writer is None and (self.tensorboard_dir is not None):
-            self.tensorboard_writer = TensorboardWriter(
-                env_name=self.env_name,
-                log_dir=self.tensorboard_dir,
-                filename=self.filename,
-                render=self.render,
-            )
-
     def get_tensorboard_hparams_suffix(self):
         suffix = ""
         for key, val in self.hparams.items():
@@ -252,7 +360,28 @@ class RL:
                 key = self.shortnames[key]
             else:
                 key = key.split("/")[1]
-            val = str(val)
+            if isinstance(val, float):
+                val = f"{val:.2}"
+            else:
+                val = str(val)
             suffix += f"-{key}{val}"
 
         return suffix
+
+    def _get_initial_obs_mean_std(
+        self, obs_norm: Any
+    ) -> Tuple[Optional[torch.tensor], Optional[torch.tensor]]:
+        f"""
+        Check if observations are normalized and if so return initial mean and std,
+        None otherwise.
+
+        Returns:
+            Tuple[Optional[torch.tensor], Optional[torch.tensor]]: obs mean and std
+        """
+        if obs_norm:
+            obs_mean = torch.zeros(self.ob_dim, device=self.device)
+            obs_std = torch.ones(self.ob_dim, device=self.device)
+        else:
+            obs_mean = None
+            obs_std = None
+        return obs_mean, obs_std

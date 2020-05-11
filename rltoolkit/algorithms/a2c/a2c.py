@@ -1,14 +1,16 @@
-import torch
+import logging
+from typing import Optional
+
 import numpy as np
+import torch
 
 from rltoolkit import config
 from rltoolkit.basic_model import Actor, Critic
 from rltoolkit.buffer import Memory
 from rltoolkit.rl import RL
 from rltoolkit.utils import measure_time
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class A2C(RL):
@@ -19,6 +21,7 @@ class A2C(RL):
         critic_num_target_updates: int = config.NUM_TARGET_UPDATES,
         num_critic_updates_per_target: int = config.NUM_CRITIC_UPDATES,
         normalize_adv: bool = config.NORMALIZE_ADV,
+        obs_norm_alpha: Optional[float] = config.NORM_ALPHA,
         *args,
         **kwargs,
     ):
@@ -35,6 +38,11 @@ class A2C(RL):
                 critic for one target. Defaults to { config.NUM_CRITIC_UPDATES }.
             normalize_adv (bool, optional): Normalize advantages for actor.
                 Defaults to { config.NORMALIZE_ADV }.
+            obs_norm_alpha (float, optional): If None normalization and clipping are
+                off. Otherwise, describes how much variance and mean should be updated
+                each iteration. obs_norm_alpha == 1 means no update and
+                obs_norm_alpha == 0 means replace old mean and std.
+                Defaults to { config.NORM_ALPHA }
             env_name (str, optional): Name of the gym environment.
                 Defaults to { config.ENV_NAME }.
             gamma (float, optional): Discount factor. Defaults to { config.GAMMA }.
@@ -72,8 +80,11 @@ class A2C(RL):
         self.critic_num_target_updates = critic_num_target_updates
         self.num_critic_updates_per_target = num_critic_updates_per_target
         self.normalize_adv = normalize_adv
+        self.obs_norm_alpha = obs_norm_alpha
+        self.obs_mean, self.obs_std = self._get_initial_obs_mean_std(
+            self.obs_norm_alpha
+        )
 
-        self.opt = torch.optim.Adam
         self.actor = Actor(self.ob_dim, self.ac_lim, self.ac_dim, self.discrete)
         self.critic = Critic(self.ob_dim)
 
@@ -83,6 +94,7 @@ class A2C(RL):
             "hparams/critic_lr": self.critic_lr,
             "hparams/critic_num_target_updates": self.critic_num_target_updates,
             "hparams/num_critic_updates_per_target": self.num_critic_updates_per_target,
+            "hparams/norm_alpha": self.obs_norm_alpha,
         }
         self.hparams.update(new_hparams)
 
@@ -114,8 +126,17 @@ class A2C(RL):
             Memory: Buffer filled with one batch
             float: Time taken for evaluation
         """
-        self.buffer = Memory()
+        self.buffer = Memory(
+            obs_mean=self.obs_mean,
+            obs_std=self.obs_std,
+            device=self.device,
+            alpha=self.obs_norm_alpha,
+        )
         self.collect_batch(self.buffer)
+
+        if self.obs_norm_alpha:
+            self.buffer = self.update_obs_mean_std(self.buffer)
+
         advantages = self.update_critic(self.buffer)
         self.update_actor(advantages, self.buffer)
         return self.buffer
@@ -141,6 +162,7 @@ class A2C(RL):
             ep_len = 0
 
             while not end:
+                obs = buffer.normalize(obs)
                 action, action_logprobs = self.actor.act(obs)
                 action_proc = self.process_action(action, obs)
                 obs, rew, done, _ = self.env.step(action_proc)
@@ -170,8 +192,8 @@ class A2C(RL):
         Returns:
             torch.Tensor: tensor containing advantages for observations from buffer
         """
-        obs = torch.stack(buffer.obs)
-        next_obs = torch.stack(buffer.next_obs)
+        obs = buffer.norm_obs
+        next_obs = buffer.norm_next_obs
         reward = torch.tensor(buffer.rewards, dtype=torch.float32, device=self.device)
         done = torch.tensor(buffer.done, dtype=torch.float32, device=self.device)
 
@@ -212,7 +234,7 @@ class A2C(RL):
         Returns:
             torch.tensor: tensor containing advantages for observations from buffer
         """
-        obs = torch.stack(buffer.obs)
+        obs = buffer.norm_obs
 
         with torch.no_grad():
             q_val = self.calculate_q_val(buffer)
@@ -232,7 +254,8 @@ class A2C(RL):
         Returns:
             torch.tensor: tensor containing Q values for observations from buffer
         """
-        next_obs = torch.stack(buffer.next_obs)
+        next_obs = buffer.norm_next_obs
+
         reward = torch.tensor(buffer.rewards, dtype=torch.float32, device=self.device)
         done = torch.tensor(buffer.done, dtype=torch.float32, device=self.device)
 
@@ -262,7 +285,7 @@ class A2C(RL):
         self.actor_optimizer.step()
         self.loss["actor"] = actor_loss.item()
 
-    def save_model(self, save_path=None):
+    def save_model(self, save_path=None) -> str:
         if self.filename is None and save_path is None:
             raise AttributeError
         elif save_path is None:
@@ -270,6 +293,7 @@ class A2C(RL):
 
         torch.save(self.actor.state_dict(), save_path + "_actor_model.pt")
         torch.save(self.critic.state_dict(), save_path + "_critic_model.pt")
+        return save_path
 
     def process_obs(self, obs):
         f"""Pre-processing of observation before it will go to the policy
@@ -295,7 +319,7 @@ class A2C(RL):
         Returns:
             [np.array]: processed action
         """
-        action = action.cpu().numpy()[0]
+        action = action.detach().cpu().numpy()[0]
         return action
 
     def test(self, episodes=None):
@@ -316,7 +340,8 @@ class A2C(RL):
             ep_ret = 0
             while not done:
                 obs = self.process_obs(obs)
-                action, _ = self._actor.act(obs, deterministic=True)
+                obs = self.buffer.normalize(obs)  # used only for normalization
+                action, _ = self.actor.act(obs, deterministic=True)
                 action_proc = self.process_action(action, obs)
                 obs, r, done, _ = self.env.step(action_proc)
                 ep_ret += r

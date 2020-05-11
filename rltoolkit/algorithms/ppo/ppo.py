@@ -1,3 +1,5 @@
+import logging
+
 import torch
 from torch.utils.data import DataLoader
 
@@ -5,9 +7,8 @@ from rltoolkit import config, utils
 from rltoolkit.algorithms.a2c.a2c import A2C
 from rltoolkit.algorithms.ppo.advantage_dataset import AdvantageDataset
 from rltoolkit.buffer import Memory
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class PPO(A2C):
@@ -41,7 +42,7 @@ class PPO(A2C):
                 Defaults to { config.PPO_BATCH_SIZE }.
             entropy_coef (float, optional): weight of entropy in the actor loss
                 function. Defaults to { config.PPO_ENTROPY }.
-           actor_lr (float, optional): Learning rate of the actor.
+            actor_lr (float, optional): Learning rate of the actor.
                 Defaults to { config.A_LR }.
             critic_lr (float, optional): Learning rate of the critic.
                 Defaults to { config.C_LR }.
@@ -51,6 +52,10 @@ class PPO(A2C):
                 critic for one target. Defaults to { config.NUM_CRITIC_UPDATES }.
             normalize_adv (bool, optional): Normalize advantages for actor.
                 Defaults to { config.NORMALIZE_ADV }.
+            obs_norm_alpha (float, optional): If set describes how much variance and
+                mean should be updated each iteration. obs_norm_alpha == 1 means no
+                update and obs_norm_alpha == 0 means replace old mean and std.
+                Defaults to { config.NORM_ALPHA }
             env_name (str, optional): Name of the gym environment.
                 Defaults to { config.ENV_NAME }.
             gamma (float, optional): Discount factor. Defaults to { config.GAMMA }.
@@ -83,6 +88,7 @@ class PPO(A2C):
         self.max_ppo_epochs = max_ppo_epochs
         self.ppo_batch_size = ppo_batch_size
         self.entropy_coef = entropy_coef
+        self.kl_div_updates_counter = 0
         new_hparams = {
             "hparams/ppo_epsilon": self.ppo_epsilon,
             "hparams/gae_lambda": self.gae_lambda,
@@ -120,9 +126,8 @@ class PPO(A2C):
         Returns:
             torch.tensor: tensor containing GAE advantages for observations from buffer
         """
-        # TODO: fix GAE to consider end and done
-        obs = torch.stack(buffer.obs)
-        next_obs = torch.stack(buffer.next_obs)
+        obs = buffer.norm_obs
+        next_obs = buffer.norm_next_obs
         ends = torch.tensor(buffer.end, dtype=torch.float32, device=self.device)
         dones = torch.tensor(buffer.done, dtype=torch.float32, device=self.device)
 
@@ -141,6 +146,7 @@ class PPO(A2C):
                 gae = self.critic(next_obs[idx]).squeeze().item()
             gae = gae * discount + delta
             advantage[idx] = gae
+        advantage = advantage.to(self.device)
         return advantage
 
     def update_actor(self, advantages: torch.Tensor, buffer: Memory):
@@ -163,9 +169,9 @@ class PPO(A2C):
             if kl_div >= self.kl_div_threshold:
                 break
 
-            for advantages, action_logprobs, actions, obs in dataloader:
+            for advantages, action_logprobs, actions, norm_obs in dataloader:
 
-                new_dist = self.actor.get_actions_dist(obs)
+                new_dist = self.actor.get_actions_dist(norm_obs)
                 new_logprobs = new_dist.log_prob(torch.squeeze(actions))
 
                 entropy = new_dist.entropy().mean()
@@ -180,9 +186,10 @@ class PPO(A2C):
                 self.loss["entropy"] += entropy.item()
                 self.loss["sum"] += loss.item()
 
-            kl_div = utils.kl_divergence(action_logprobs, new_logprobs)
+            kl_div = utils.kl_divergence(action_logprobs.cpu(), new_logprobs.cpu())
 
         logger.debug(f"PPO update finished after {i} epochs with KL = {kl_div}")
+        self.kl_div_updates_counter += i + 1
 
     def _clip_loss(
         self,
@@ -196,7 +203,42 @@ class PPO(A2C):
         actor_loss = -(torch.min(ratio * advantages, clipped_ratio * advantages)).mean()
         return actor_loss
 
+    def add_tensorboard_logs(self, *args, **kwargs):
+        super().add_tensorboard_logs(*args, **kwargs)
+        if self.debug_mode:
+            self.log_ppo_epochs()
+
+    def log_ppo_epochs(self):
+        if self.iteration == 0:
+            mean_updates = self.kl_div_updates_counter
+        elif self.iteration % self.stats_freq == 0:
+            mean_updates = self.kl_div_updates_counter / self.stats_freq
+        else:
+            denominator = self.iteration % self.stats_freq
+            mean_updates = self.kl_div_updates_counter / denominator
+
+        self.tensorboard_writer.log_kl_div_updates(
+            self.iteration,
+            self.stats_logger.frames,
+            self.stats_logger.rollouts,
+            mean_updates,
+        )
+        self.kl_div_updates_counter = 0
+
 
 if __name__ == "__main__":
-    model = PPO()
+    model = PPO(
+        env_name="Hopper-v2",
+        iterations=1000,
+        max_frames=1e6,
+        gamma=0.99,
+        actor_lr=3e-4,
+        critic_lr=1e-3,
+        batch_size=2000,
+        ppo_batch_size=256,
+        kl_div_threshold=0.15,
+        stats_freq=5,
+        max_ppo_epochs=50,
+        tensorboard_dir="logs",
+    )
     model.train()

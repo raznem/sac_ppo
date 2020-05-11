@@ -2,8 +2,9 @@ import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import torch
-from scipy.stats import entropy
+from rltoolkit import config
 
 
 def measure_time(func: Callable) -> Callable:
@@ -34,19 +35,19 @@ def get_log_dir(log_dir: str) -> Path:
             "/path/to/log/dir/ + time"
     """
     log_dir = Path(log_dir)
-    current_time = datetime.datetime.now().strftime("%b%d_%H-%M-%S")
+    current_time = datetime.datetime.now().strftime("%b%d_%H-%M-%S.%f")[:-3]
     log_dir = log_dir / current_time
     return log_dir
 
 
 def get_time() -> str:
-    current_time = datetime.datetime.now().strftime("%b%d_%H-%M-%S")
+    current_time = datetime.datetime.now().strftime("%b%d_%H-%M-%S.%f")[:-3]
     return current_time
 
 
 def kl_divergence(log_p: torch.tensor, log_q: torch.tensor) -> torch.tensor:
     """
-    Calculate KL divergence of two distributions p and q.
+    Calculate KL divergence approximation of two distributions p and q.
 
     Args:
         p (torch.tensor): log probabilites from distribution 1
@@ -55,7 +56,28 @@ def kl_divergence(log_p: torch.tensor, log_q: torch.tensor) -> torch.tensor:
     Returns:
         torch.tensor: KL divergence >= 0
     """
-    p_new = torch.exp(log_p.detach()) + 1.2e-7
-    q_new = torch.exp(log_q.detach()) + 1.2e-7
+    return (log_p - log_q).mean().item()
 
-    return entropy(p_new, q_new)
+
+def standardize_and_clip(
+    obs: torch.Tensor,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    max_abs_value: float = config.MAX_ABS_OBS_VALUE,
+) -> np.array:
+    assert obs.shape[-1] == mean.shape[0]
+    assert obs.shape[-1] == std.shape[0]
+    obs_stand = (obs - mean) / (std + 1e-8)
+    clipped_obs_stand = torch.clamp(obs_stand, -max_abs_value, max_abs_value)
+
+    return clipped_obs_stand
+
+
+def revert_standardization(
+    obs_stand: np.array, mean: np.array, std: np.array
+) -> np.array:
+    assert obs_stand.shape[-1] == mean.shape[0]
+    assert obs_stand.shape[-1] == std.shape[0]
+    obs = obs_stand * std + mean
+
+    return obs

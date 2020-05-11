@@ -13,7 +13,7 @@ class AdvantageDataset(Dataset):
         self.advantages = advantages
         self.action_logprobs = torch.cat(buffer.action_logprobs)
         self.actions = torch.cat(buffer.actions)
-        self.obs = torch.cat(buffer.obs)
+        self.norm_obs = buffer.norm_obs.squeeze()
 
     def __len__(self):
         return len(self.advantages)
@@ -22,6 +22,6 @@ class AdvantageDataset(Dataset):
         adv = self.advantages[idx]
         act_logprob = self.action_logprobs[idx]
         act = self.actions[idx]
-        obs = self.obs[idx]
+        norm_obs = self.norm_obs[idx]
 
-        return adv, act_logprob, act, obs
+        return adv, act_logprob, act, norm_obs

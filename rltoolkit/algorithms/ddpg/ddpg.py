@@ -1,17 +1,18 @@
+import copy
+import logging
+from itertools import chain
+
+import numpy as np
 import torch
 from torch.nn import functional as F
-import copy
-from itertools import chain
-import numpy as np
 
 from rltoolkit import config
 from rltoolkit.algorithms.ddpg.models import Actor, Critic
 from rltoolkit.buffer import ReplayBuffer
 from rltoolkit.rl import RL
 from rltoolkit.utils import measure_time
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class DDPG(RL):
@@ -26,6 +27,7 @@ class DDPG(RL):
         update_freq: int = config.UPDATE_FREQ,
         grad_steps: int = config.GRAD_STEPS,
         act_noise: float = config.ACT_NOISE,
+        obs_norm: bool = config.OBS_NORM,
         *args,
         **kwargs,
     ):
@@ -50,6 +52,8 @@ class DDPG(RL):
                 Defaults to { config.GRAD_STEPS }.
             act_noise (float, optional): Actions noise multiplier.
                 Defaults to { config.ACT_NOISE }.
+            obs_norm (bool, optional): Observation normalization.
+                Defaults to { False }.
             env_name (str, optional): Name of the gym environment.
                 Defaults to { config.ENV_NAME }.
             gamma (float, optional): Discount factor. Defaults to { config.GAMMA }.
@@ -77,6 +81,7 @@ class DDPG(RL):
 
         """
         super().__init__(*args, **kwargs)
+        assert not self.discrete, "DDPG works only on continuous actions space"
         self._actor = None
         self.actor_optimizer = None
         self._actor_targ = None
@@ -93,8 +98,9 @@ class DDPG(RL):
         self.update_freq = update_freq
         self.grad_steps = grad_steps
         self.act_noise = act_noise
+        self.obs_norm = obs_norm
+        self.obs_mean, self.obs_std = self._get_initial_obs_mean_std(self.obs_norm)
 
-        self.opt = torch.optim.Adam
         self.actor = Actor(self.ob_dim, self.ac_lim, self.ac_dim)
         self.critic = Critic(self.ob_dim, self.ac_dim)
 
@@ -104,6 +110,8 @@ class DDPG(RL):
             self.ac_dim,
             discrete=self.discrete,
             dtype=torch.float32,
+            device=self.device,
+            obs_norm=self.obs_norm,
         )
 
         self.loss = {"actor": 0.0, "critic": 0.0}
@@ -117,6 +125,7 @@ class DDPG(RL):
             "hparams/update_freq": self.update_freq,
             "hparams/grad_steps": self.grad_steps,
             "hparams/act_noise": self.act_noise,
+            "hparams/obs_norm": self.obs_norm,
         }
         self.hparams.update(new_hparams)
 
@@ -156,12 +165,15 @@ class DDPG(RL):
             float: Time taken for evaluation
         """
         self.collect_batch_and_train(self.batch_size)
+        self.replay_buffer = self.update_obs_mean_std(self.replay_buffer)
         return self.replay_buffer.last_rollout()
 
     def noise_action(self, obs, act_noise):
         action, _ = self._actor.act(obs)
-        action += act_noise * torch.randn(self.ac_dim)
-        return np.clip(action, -self.ac_lim, self.ac_lim)
+        action += act_noise * torch.randn(self.ac_dim, device=self.device)
+        return np.clip(action.cpu(), -self.ac_lim.cpu(), self.ac_lim.cpu()).to(
+            self.device
+        )
 
     def initial_act(self, obs) -> torch.Tensor:
         action = torch.tensor(self.env.action_space.sample()).unsqueeze(0)
@@ -188,6 +200,7 @@ class DDPG(RL):
             ep_len = 0
 
             while not end:
+                obs = self.replay_buffer.normalize(obs)
                 if self.stats_logger.frames < self.random_frames:
                     action = self.initial_act(obs)
                 else:
@@ -218,7 +231,9 @@ class DDPG(RL):
     def make_update(self):
         if self.update_condition():
             for _ in range(self.grad_steps):
-                batch = self.replay_buffer.sample_batch(self.update_batch_size)
+                batch = self.replay_buffer.sample_batch(
+                    self.update_batch_size, self.device
+                )
                 self.update(*batch)
 
     def compute_qfunc_targ(
@@ -313,6 +328,20 @@ class DDPG(RL):
 
         self._critic.train()
 
+    def collect_params_dict(self):
+        params_dict = {}
+        params_dict["actor"] = self.actor.state_dict()
+        params_dict["critic"] = self.critic.state_dict()
+        params_dict["obs_mean"] = self.replay_buffer.obs_mean
+        params_dict["obs_std"] = self.replay_buffer.obs_std
+        return params_dict
+
+    def apply_params_dict(self, params_dict):
+        self.actor.load_state_dict(params_dict["actor"])
+        self.critic.load_state_dict(params_dict["critic"])
+        self.replay_buffer.obs_mean = params_dict["obs_mean"]
+        self.replay_buffer.obs_std = params_dict["obs_std"]
+
     def save_model(self, save_path=None):
         if self.filename is None and save_path is None:
             raise AttributeError
@@ -321,6 +350,7 @@ class DDPG(RL):
 
         torch.save(self._actor.state_dict(), save_path + "_actor_model.pt")
         torch.save(self._critic.state_dict(), save_path + "_critic_model.pt")
+        return save_path
 
     def process_obs(self, obs):
         f"""Pre-processing of observation before it will go to the policy
@@ -367,6 +397,7 @@ class DDPG(RL):
             ep_ret = 0
             while not done:
                 obs = self.process_obs(obs)
+                obs = self.replay_buffer.normalize(obs)
                 action, _ = self._actor.act(obs, deterministic=True)
                 action_proc = self.process_action(action, obs)
                 obs, r, done, _ = self.env.step(action_proc)
@@ -377,22 +408,20 @@ class DDPG(RL):
 
 
 if __name__ == "__main__":
-    model = DDPG(
-        env_name="HalfCheetah-v2",
-        actor_lr=1e-3,
-        critic_lr=1e-3,
-        iterations=1000,
-        gamma=0.95,
-        batch_size=1000,
-        buffer_size=int(1e6),
-        update_batch_size=256,
-        random_frames=10000,
-        stats_freq=5,
-        update_freq=50,
-        grad_steps=50,
-        act_noise=0.1,
-        tensorboard_dir="logs",
-        # tensorboard_comment="pi_upd_each",
-        test_episodes=1,
-    )
-    model.train()
+    with torch.cuda.device(0):
+        model = DDPG(
+            env_name="HalfCheetah-v2",
+            buffer_size=int(1e6),
+            iterations=5,
+            gamma=0.99,
+            batch_size=200,
+            stats_freq=1,
+            test_episodes=2,
+            use_gpu=True,
+            obs_norm=True,
+            # tensorboard_dir="tb_logs_tanh",
+            # tensorboard_comment="no_tanh",
+            log_dir="optional_logs",
+        )
+        model.train()
+        # model.save("tmp_norb.pkl")

@@ -1,8 +1,9 @@
 import ctypes
+import logging
 import multiprocessing as mp
 import numbers
 from os import path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import gym
 import numpy as np
@@ -10,11 +11,10 @@ import torch
 from pyvirtualdisplay import Display
 from torch.utils.tensorboard import SummaryWriter
 
-from rltoolkit.buffer import Memory
+from rltoolkit.buffer import Memory, ReplayBufferAcM
 from rltoolkit.utils import measure_time
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class TensorboardWriter(SummaryWriter):
@@ -174,9 +174,19 @@ class TensorboardWriter(SummaryWriter):
 
         self.add_histogram("Return", buffer.returns_rollouts, i)
 
+    def log_kl_div_updates(
+        self, iterations: int, frames: int, rollouts: int, updates_no: float
+    ):
+        self.add_scalar("PPO/KL_updates_mean/per_iterations", updates_no, iterations)
+        self.add_scalar("PPO/KL_updates_mean/per_frames", updates_no, frames)
+        self.add_scalar("PPO/KL_updates_mean/per_rollouts", updates_no, rollouts)
+
+    def log_sac_alpha(self, iterations: int, alpha: float):
+        self.add_scalar("SAC/Alpha_per_iterations", alpha, iterations)
+
     def log_actions(self, i: int, buffer: Memory):
         assert len(buffer.actions) > 0
-        actions = self._get_actions_tensor(buffer)
+        actions = self._get_buffer_elem_tensor(buffer.actions)
 
         if len(actions.shape) == 1:
             self._add_single_variable_histogram("Action", actions, i)
@@ -186,16 +196,17 @@ class TensorboardWriter(SummaryWriter):
             raise ValueError("2D actions are not supported")
 
     @staticmethod
-    def _get_actions_tensor(buffer: Memory) -> torch.tensor:
-        if isinstance(buffer.actions[0], numbers.Number):
-            actions = torch.tensor(buffer.actions)
-        elif isinstance(buffer.actions[0], np.ndarray):
-            actions = np.array(buffer.actions)
-        elif isinstance(buffer.actions[0], torch.Tensor):
-            actions = torch.cat(buffer.actions)
+    def _get_buffer_elem_tensor(buffer_list: Iterable) -> torch.tensor:
+        first_val = buffer_list[0]
+        if isinstance(first_val, numbers.Number):
+            output = torch.tensor(buffer_list)
+        elif isinstance(first_val, np.ndarray):
+            output = np.array(buffer_list)
+        elif isinstance(first_val, torch.Tensor):
+            output = torch.cat(buffer_list)
         else:
             raise TypeError("Unsupported action type.")
-        return actions
+        return output
 
     def _add_single_variable_histogram(self, name: str, vector: torch.tensor, i: int):
         self.add_histogram(f"{name}/0", vector, i)
@@ -211,7 +222,7 @@ class TensorboardWriter(SummaryWriter):
     def log_observations(self, i: int, buffer: Memory):
         assert len(buffer) > 0
         if isinstance(buffer.obs[0], torch.Tensor):
-            obs = torch.cat(buffer.obs)
+            obs = buffer.obs.squeeze()
         elif isinstance(buffer.obs[0], np.ndarray):
             obs = np.stack(buffer.obs, axis=0)
         else:
@@ -227,21 +238,27 @@ class TensorboardWriter(SummaryWriter):
     def log_running_return(
         self, iterations: int, frames: int, rollouts: int, running_return: float
     ):
-        self.add_scalar("Running_return/per_iterations", running_return, iterations)
-        self.add_scalar("Running_return/per_frames", running_return, frames)
-        self.add_scalar("Running_return/per_rollouts", running_return, rollouts)
+        self.add_scalar("1_Running_return/per_iterations", running_return, iterations)
+        self.add_scalar("1_Running_return/per_frames", running_return, frames)
+        self.add_scalar("1_Running_return/per_rollouts", running_return, rollouts)
 
     def log_test_return(
         self, iterations: int, frames: int, rollouts: int, test_return: float
     ):
-        self.add_scalar("Test_return/per_iterations", test_return, iterations)
-        self.add_scalar("Test_return/per_frames", test_return, frames)
-        self.add_scalar("Test_return/per_rollouts", test_return, rollouts)
+        self.add_scalar("1_Test_return/per_iterations", test_return, iterations)
+        self.add_scalar("1_Test_return/per_frames", test_return, frames)
+        self.add_scalar("1_Test_return/per_rollouts", test_return, rollouts)
 
     def log_loss(self, i: int, loss: Dict[str, int]):
         for key, value in loss.items():
             label = "Loss/" + key.capitalize()
             self.add_scalar(label, value, i)
+
+    def log_acm_pretrain_loss(
+        self, train_loss: float, validation_loss: float, epoch: int
+    ):
+        self.add_scalar("Loss/pretrain_acm_train", train_loss, epoch)
+        self.add_scalar("Loss/pretrain_acm_val", validation_loss, epoch)
 
     def log_hyperparameters(self, hparam_dict, metric_dict):
         """
@@ -252,6 +269,28 @@ class TensorboardWriter(SummaryWriter):
             metrics (dict): [description]
         """
         self.add_hparams(hparam_dict, metric_dict)
+
+    def log_acm_action(self, i: int, buffer: ReplayBufferAcM):
+        # TODO: refactor this and more :D
+        assert len(buffer.actions_acm) > 0
+        actions = self._get_buffer_elem_tensor(buffer.actions_acm)
+
+        if len(actions.shape) == 1:
+            self._add_single_variable_histogram("ActionACM", actions, i)
+        elif len(actions.shape) == 2:
+            self._add_multiple_variables_histograms("ActionACM", actions, i)
+        else:
+            raise ValueError("2D actions are not supported")
+        assert len(buffer) > 0
+
+    def log_obs_mean_std(self, iterations: int, mean: torch.tensor, std: torch.tensor):
+        """
+        Log all observation means and standard deviations.
+        """
+
+        for i in range(len(mean)):
+            self.add_scalar(f"Obs/mean/{i}", mean[i], iterations)
+            self.add_scalar(f"Obs/std/{i}", std[i], iterations)
 
 
 def _record_episode_mp(

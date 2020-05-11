@@ -1,2 +1,2 @@
-# sac_ppo
-Implementation and comparision of SAC and PPO
+# a2c
+Pytorch implementation of advantage actor critic (A2C)

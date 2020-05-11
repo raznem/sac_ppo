@@ -1,15 +1,16 @@
+import copy
+import logging
+from itertools import chain
+
+import numpy as np
 import torch
 from torch.nn import functional as F
-import copy
-from itertools import chain
-import numpy as np
 
 from rltoolkit import config
 from rltoolkit.algorithms.ddpg import DDPG
 from rltoolkit.algorithms.sac.models import SAC_Actor, SAC_Critic
-from rltoolkit.logger import get_logger
 
-logger = get_logger()
+logger = logging.getLogger(__name__)
 
 
 class SAC(DDPG):
@@ -88,7 +89,6 @@ class SAC(DDPG):
         self.alpha = alpha
         self.pi_update_freq = pi_update_freq
 
-        self.opt = torch.optim.Adam
         self.actor = SAC_Actor(self.ob_dim, self.ac_lim, self.ac_dim, self.discrete)
         self.critic_1 = SAC_Critic(self.ob_dim, self.ac_dim, self.discrete)
         self.critic_2 = SAC_Critic(self.ob_dim, self.ac_dim, self.discrete)
@@ -104,7 +104,9 @@ class SAC(DDPG):
         self.target_entropy = -torch.prod(
             torch.tensor(self.ac_dim, dtype=torch.float32)
         ).item()
-        self.log_alpha = torch.tensor(np.log(self.alpha), requires_grad=True)
+        self.log_alpha = torch.tensor(
+            np.log(self.alpha), requires_grad=True, device=self.device
+        )
         self.alpha_opt = self.opt([self.log_alpha], lr=alpha_lr)
 
     @property
@@ -277,7 +279,28 @@ class SAC(DDPG):
         self.alpha_opt.step()
         self.alpha = self.log_alpha.exp().item()
 
-    def save_model(self, save_path=None):
+    def add_tensorboard_logs(self, *args, **kwargs):
+        super().add_tensorboard_logs(*args, **kwargs)
+        if self.debug_mode:
+            self.tensorboard_writer.log_sac_alpha(self.iteration, self.alpha)
+
+    def collect_params_dict(self):
+        params_dict = {}
+        params_dict["actor"] = self.actor.state_dict()
+        params_dict["critic_1"] = self.critic_1.state_dict()
+        params_dict["critic_2"] = self.critic_2.state_dict()
+        params_dict["obs_mean"] = self.replay_buffer.obs_mean
+        params_dict["obs_std"] = self.replay_buffer.obs_std
+        return params_dict
+
+    def apply_params_dict(self, params_dict):
+        self.actor.load_state_dict(params_dict["actor"])
+        self.critic_1.load_state_dict(params_dict["critic_1"])
+        self.critic_2.load_state_dict(params_dict["critic_2"])
+        self.replay_buffer.obs_mean = params_dict["obs_mean"]
+        self.replay_buffer.obs_std = params_dict["obs_std"]
+
+    def save_model(self, save_path=None) -> str:
         if self.filename is None and save_path is None:
             raise AttributeError
         elif save_path is None:
@@ -286,10 +309,25 @@ class SAC(DDPG):
         torch.save(self._actor.state_dict(), save_path + "_actor_model.pt")
         torch.save(self._critic_1.state_dict(), save_path + "_critic_1_model.pt")
         torch.save(self._critic_2.state_dict(), save_path + "_critic_2_model.pt")
+        return save_path
 
 
 if __name__ == "__main__":
-    model = SAC(
-        env_name="Pendulum-v0", iterations=200, gamma=0.99, batch_size=200, stats_freq=5
-    )
-    model.train()
+    with torch.cuda.device(1):
+        model = SAC(
+            env_name="HalfCheetah-v2",
+            iterations=200,
+            gamma=0.99,
+            batch_size=1000,
+            stats_freq=5,
+            test_episodes=2,
+            update_batch_size=100,
+            update_freq=50,
+            grad_steps=50,
+            # random_frames=10000,
+            use_gpu=True,
+            obs_norm=False,
+            tensorboard_dir="logs_norm",
+            tensorboard_comment="",
+        )
+        model.train()

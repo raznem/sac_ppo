@@ -13,11 +13,11 @@ class SAC_Actor(nn.Module):
         self.ac_lim = ac_lim
         self.obs_dim = obs_dim
         self.discrete = discrete
-        self.fc1 = nn.Linear(obs_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc_prob = nn.Linear(64, ac_dim)
+        self.fc1 = nn.Linear(obs_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc_prob = nn.Linear(256, ac_dim)
         if not self.discrete:
-            self.fc_scale = nn.Linear(64, ac_dim)
+            self.fc_scale = nn.Linear(256, ac_dim)
             self.log_scale_min = -20
             self.log_scale_max = 2
 
@@ -74,9 +74,9 @@ class SAC_Critic(nn.Module):
         super().__init__()
         self.discrete = discrete
         self.ac_dim = ac_dim
-        self.fc1 = nn.Linear(obs_dim + ac_dim, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)
+        self.fc1 = nn.Linear(obs_dim + ac_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
 
     def forward(self, obs, ac):
         if self.discrete:
