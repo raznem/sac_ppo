@@ -1,2 +1,3 @@
-# a2c
-Pytorch implementation of advantage actor critic (A2C)
+# Implementation of the SAC and PPO Reinforcement Learnign algorithms
+
+Usage example: https://github.com/raznem/sac_ppo/blob/master/run_hparams.py
