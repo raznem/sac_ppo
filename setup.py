@@ -26,7 +26,7 @@ setuptools.setup(
         "PyVirtualDisplay==0.2.5",
         "gym==0.15.4",
         "torch>=1.3.1",
-        "numpy==1.20.3",
+        "numpy>=1.18.1",
         "tensorboard",
     ],
 )
