@@ -20,6 +20,17 @@ class SAC_Actor(nn.Module):
             self.fc_scale = nn.Linear(256, ac_dim)
             self.log_scale_min = -20
             self.log_scale_max = 2
+        self.dist = None
+
+    def log_prob(self, action):
+        if self.discrete:
+            action_logprobs = self.dist.log_prob(action)
+        else:
+            # Correction for tanh squashing:
+            action_logprobs = self.dist.log_prob(action).sum(axis=-1)
+            correction = 2 * (np.log(2) - action - F.softplus(-2 * action)).sum(axis=1)
+            action_logprobs -= correction
+        return action_logprobs
 
     def forward(self, x, deterministic=False):
         x = torch.relu(self.fc1(x))
@@ -28,29 +39,24 @@ class SAC_Actor(nn.Module):
             # action_prob = torch.softmax(self.fc_prob(x), dim=1)
             action_prob = F.gumbel_softmax(self.fc_prob(x), dim=1)
             log_scale = None
-            dist = Categorical(action_prob)
+            self.dist = Categorical(action_prob)
             if deterministic:
                 action = torch.argmax(action_prob, dim=1)
             else:
-                action = dist.sample()
-            action_logprobs = dist.log_prob(action)
+                action = self.dist.sample()
         else:
             action_mean = self.fc_prob(x)
             log_scale = self.fc_scale(x)
             log_scale = torch.clamp(log_scale, self.log_scale_min, self.log_scale_max)
-            dist = Normal(action_mean, torch.exp(log_scale))
+            self.dist = Normal(action_mean, torch.exp(log_scale))
             if deterministic:
                 action = action_mean
             else:
-                action = dist.rsample()  # opposed to sample, rsample keeps grad
-            action_logprobs = dist.log_prob(action).sum(axis=-1)
+                action = self.dist.rsample()  # opposed to sample, rsample keeps grad
 
-            # Correction for tanh squashing:
-            correction = 2 * (np.log(2) - action - F.softplus(-2 * action)).sum(axis=1)
-            action_logprobs -= correction
             action = torch.tanh(action)
             action = action * self.ac_lim
-
+        action_logprobs = self.log_prob(action)
         return action, action_logprobs
 
     def act(self, obs, deterministic=False):
